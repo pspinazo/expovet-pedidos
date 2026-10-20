@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es-PY">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1F7A3A">
+  <meta name="description" content="Toma de pedidos Agrofield para la Expovet 2026 (funciona sin internet).">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Pedidos Expovet">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Pedidos Expovet</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="./icons/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" sizes="180x180">
+  <link rel="stylesheet" href="./css/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Saltar al contenido</a>
+
+  <!-- Barra superior (se oculta en el login) -->
+  <header class="topbar" id="topbar" hidden>
+    <button class="topbar__brand" type="button" data-nav="#/home" aria-label="Ir al inicio">
+      <span class="brand-mark" aria-hidden="true">E</span>
+      <span class="topbar__user">
+        <strong id="user-name">—</strong>
+        <small id="user-role">—</small>
+      </span>
+    </button>
+    <div class="topbar__status">
+      <span class="conn" id="conn-badge" role="status" aria-live="polite">
+        <span class="conn__dot" aria-hidden="true"></span><span class="conn__label">Verificando…</span>
+      </span>
+      <button class="pending-badge" id="pending-badge" type="button" data-nav="#/pedidos" hidden>
+        <span class="pending-badge__count" id="pending-count">0</span>
+        <span class="pending-badge__label" id="pending-label">pendientes</span>
+      </button>
+      <button class="icon-btn" id="menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="menu" aria-label="Menú">
+        <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <nav class="menu" id="menu" role="menu" hidden>
+      <button type="button" role="menuitem" data-action="sync" data-vendor-only>Enviar pendientes ahora</button>
+      <button type="button" role="menuitem" data-action="refresh-catalog" data-vendor-only>Actualizar catálogo y clientes</button>
+      <button type="button" role="menuitem" data-action="logout" class="menu__danger">Cerrar sesión</button>
+      <p class="menu__meta" id="menu-meta"></p>
+    </nav>
+  </header>
+
+  <!-- Aviso global (sesión vencida, sin catálogo, etc.) -->
+  <div class="banner" id="banner" role="alert" hidden></div>
+
+  <main id="main" class="main" tabindex="-1">
+    <div class="loading-screen"><span class="spinner" aria-hidden="true"></span> Cargando…</div>
+  </main>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+  <div class="modal-root" id="modal-root"></div>
+
+  <noscript>Esta aplicación necesita JavaScript.</noscript>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
