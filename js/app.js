@@ -527,7 +527,7 @@ function renderLogin() {
     <section class="login" aria-labelledby="login-title">
       <div class="login__card">
         <div class="login__brand">
-          <span class="brand-mark brand-mark--lg" aria-hidden="true">E</span>
+          <img class="brand-mark brand-mark--lg" src="./icons/icon.svg" alt="" width="64" height="64">
           <div>
             <h1 id="login-title">Pedidos Expovet</h1>
             <p>Agrofield · 3 y 4 de noviembre</p>

@@ -4,7 +4,7 @@
  * - Al cambiar SHELL_VERSION se descarga el shell nuevo y se borran cachés viejas.
  * Rutas relativas para funcionar bajo un subpath de GitHub Pages (ej. /expovet-pedidos/).
  */
-const SHELL_VERSION = 'v1.1.1';
+const SHELL_VERSION = 'v1.1.2';
 const CACHE_NAME = `expovet-shell-${SHELL_VERSION}`;
 
 const SHELL_FILES = [
