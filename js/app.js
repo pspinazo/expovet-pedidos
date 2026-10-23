@@ -230,8 +230,18 @@ async function loadMasterData() {
   state.productosBySku = new Map(state.productos.map((p) => [String(p.sku), p]));
   state.clientes = clientes
     .map((c) => ({ ...c, _idx: normalizeText(`${c.id} ${c.razonSocial} ${c.nombreFantasia}`) }))
-    .sort((a, b) => String(a.nombreFantasia || a.razonSocial).localeCompare(String(b.nombreFantasia || b.razonSocial), 'es'));
+    .sort((a, b) => String(a.nombreFantasia || a.razonSocial).localeCompare(String(b.nombreFantasia || b.razonSocial), 'es')
+      // Sucursales con el mismo nombre: ordenadas por ciudad y dirección
+      || String(a.ciudad || '').localeCompare(String(b.ciudad || ''), 'es')
+      || String(a.direccion || '').localeCompare(String(b.direccion || ''), 'es'));
   state.catalogAt = catalogAt;
+}
+
+/** Dirección + ciudad del cliente (distingue sucursales con el mismo nombre). Vacío si no hay datos. */
+function clientAddressHtml(c) {
+  const partes = [c.direccion, c.ciudad].map((x) => String(x || '').trim()).filter(Boolean);
+  if (!partes.length) return '';
+  return `<span class="client-card__addr"><span aria-hidden="true">📍</span> ${escapeHtml(partes.join(' · '))}</span>`;
 }
 
 /** Texto extra de búsqueda de un combo: la palabra "combo" + SKU y descripción de sus componentes. */
@@ -785,6 +795,7 @@ function drawClientes(q) {
         <button type="button" class="client-card ${sel === c.id ? 'is-selected' : ''}" data-cli="${escapeHtml(c.id)}">
           <span class="client-card__name">${escapeHtml(c.nombreFantasia || c.razonSocial)}</span>
           <span class="client-card__meta">${escapeHtml(c.razonSocial)} · <span class="mono">${escapeHtml(c.id)}</span></span>
+          ${clientAddressHtml(c)}
           <span class="client-card__go" aria-hidden="true">›</span>
         </button>
       </li>`).join('')
