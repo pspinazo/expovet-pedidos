@@ -4,7 +4,7 @@
  */
 
 // Versión de la app. Si la cambiás, cambiá también SHELL_VERSION en sw.js.
-export const APP_VERSION = '1.2.1';
+export const APP_VERSION = '1.3.0';
 
 // URL del Web App de Google Apps Script (termina en /exec).
 const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbyJlYElj1ikeTYB0pym64Wv9Wqr8FGQu_xpOZpzEixsizTS4uxFv60RiXHz0bdZoj5smw/exec';

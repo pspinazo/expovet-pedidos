@@ -41,6 +41,7 @@ const state = {
   submitting: false,
   catalogAt: null,
   catalogRefreshing: false, // evita dos actualizaciones de catálogo en paralelo
+  prodTab: 'todos',       // pestaña de productos: 'todos' | 'productos' | 'combos'
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -272,7 +273,42 @@ function toStoredProducto(p) {
         sku: String(c.sku), descripcion: c.descripcion ?? '', cantidad: Number(c.cantidad) || 0, precio: Number(c.precio) || 0,
       }))
       : [],
+    escalas: !p.esCombo && Array.isArray(p.escalas)
+      ? p.escalas.map((t) => ({ min: Number(t.min) || 0, precio: Number(t.precio) || 0 }))
+        .filter((t) => t.min >= 2 && t.precio > 0).sort((a, b) => a.min - b.min)
+      : [],
   };
+}
+
+/**
+ * Precio unitario según la cantidad: tramo más alto alcanzado de la escala (solo productos sueltos).
+ * Es la misma regla que aplica el servidor al grabar, así el total de la tablet coincide con el Sheet.
+ */
+function unitPrice(p, qty) {
+  let precio = p.precio;
+  for (const t of p.escalas || []) if (qty >= t.min) precio = t.precio;
+  return precio;
+}
+
+/** Próximo tramo que todavía no se alcanzó ({ min, precio, faltan }) o null. */
+function nextTier(p, qty) {
+  const t = (p.escalas || []).find((x) => qty < x.min);
+  return t ? { ...t, faltan: t.min - qty } : null;
+}
+
+/** "12+ u: 55.000 · 24+ u: 52.000" (vacío si no hay escala). */
+function tiersText(p) {
+  return (p.escalas || []).map((t) => `${formatNum(t.min)}+ u: ${formatGs(t.precio)}`).join(' · ');
+}
+
+/** Aviso de escala para una cantidad dada (HTML): precio aplicado y/o cuánto falta para el próximo tramo. */
+function tierHintHtml(p, qty) {
+  if (!p.escalas || !p.escalas.length || !qty) return '';
+  const next = nextTier(p, qty);
+  const partes = [];
+  if (unitPrice(p, qty) !== p.precio) partes.push('<span class="tier-hint tier-hint--ok">✔ Precio por cantidad aplicado</span>');
+  if (next) partes.push(`<span class="tier-hint">Faltan ${formatNum(next.faltan)} u para ${escapeHtml(formatGs(next.precio))} c/u</span>`);
+  return partes.join(' ');
 }
 
 /**
@@ -324,7 +360,7 @@ async function autoRefreshCatalog() {
   const cartChanged = !!state.draft && Object.keys(state.draft.items).some((sku) => {
     const a = prev.get(sku);
     const b = state.productosBySku.get(sku);
-    return !!a !== !!b || (a && b && a.precio !== b.precio);
+    return !!a !== !!b || (a && b && (a.precio !== b.precio || JSON.stringify(a.escalas || []) !== JSON.stringify(b.escalas || [])));
   });
   redrawOrderLists(cartChanged);
   // El carrito en curso cambió (precio distinto o producto/combo que ya no se ofrece): avisar.
@@ -681,7 +717,8 @@ function cartLines() {
     const p = state.productosBySku.get(sku);
     if (!p || !(qty > 0)) continue;
     lines.push({
-      sku, descripcion: p.descripcion, marca: p.marca, codBarra: p.codBarra, precio: p.precio, cantidad: qty, subtotal: p.precio * qty,
+      sku, descripcion: p.descripcion, marca: p.marca, codBarra: p.codBarra,
+      precio: unitPrice(p, qty), precioLista: p.precio, cantidad: qty, subtotal: unitPrice(p, qty) * qty,
       esCombo: !!p.esCombo, contenido: p.esCombo ? comboContents(p) : '',
     });
   }
@@ -822,6 +859,11 @@ function renderStepProductos() {
             <span class="field__label">Buscar producto</span>
             <input class="input input--search" id="prod-q" type="search" placeholder="SKU, código de barras, marca o descripción" autocomplete="off" spellcheck="false" enterkeyhint="search">
           </label>
+          <div class="tabs" role="tablist" aria-label="Tipo de producto" id="prod-tabs">
+            <button type="button" role="tab" class="tabs__btn" data-tab="todos">Todos <span class="tabs__count" data-count="todos"></span></button>
+            <button type="button" role="tab" class="tabs__btn" data-tab="productos">Productos <span class="tabs__count" data-count="productos"></span></button>
+            <button type="button" role="tab" class="tabs__btn" data-tab="combos">Combos <span class="tabs__count" data-count="combos"></span></button>
+          </div>
           <p class="search__meta" id="prod-meta" aria-live="polite"></p>
         </div>
         <ul class="list list--products" id="prod-list"></ul>
@@ -849,6 +891,12 @@ function renderStepProductos() {
   const input = $('#prod-q');
   const draw = () => drawProductos(normalizeText(input.value));
   input.addEventListener('input', debounce(draw, SEARCH_DEBOUNCE_MS));
+  $('#prod-tabs').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tab]');
+    if (!b || b.dataset.tab === state.prodTab) return;
+    state.prodTab = b.dataset.tab;
+    draw();
+  });
   // Lector de código de barras (actúa como teclado + Enter): coincidencia exacta suma 1 unidad.
   input.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
@@ -910,27 +958,51 @@ function productRow(p) {
       <span class="product__name">${comboBadge(p)}${escapeHtml(p.descripcion)}</span>
       ${p.esCombo ? `<span class="product__combo">${escapeHtml(comboContents(p))}</span>` : ''}
       <span class="product__meta">${escapeHtml(p.marca)} · SKU <span class="mono">${escapeHtml(p.sku)}</span>${p.codBarra ? ` · <span class="mono">${escapeHtml(p.codBarra)}</span>` : ''}</span>
-      <span class="product__price">${escapeHtml(formatGs(p.precio))}${qty ? ` <span class="product__subtotal">· Subtotal ${escapeHtml(formatGs(p.precio * qty))}</span>` : ''}</span>
+      <span class="product__price">${priceHtml(p, qty)}${qty ? ` <span class="product__subtotal">· Subtotal ${escapeHtml(formatGs(unitPrice(p, qty) * qty))}</span>` : ''}</span>
+      ${p.escalas && p.escalas.length ? `<span class="product__tiers">🏷 ${escapeHtml(tiersText(p))}</span>` : ''}
+      ${tierHintHtml(p, qty) ? `<span class="product__hint">${tierHintHtml(p, qty)}</span>` : ''}
     </div>
     <div class="product__qty">${qtyControl(p.sku, qty, p.descripcion)}</div>
   </li>`;
 }
 
+/** Precio de la fila: si la escala bajó el precio, muestra el de lista tachado. */
+function priceHtml(p, qty) {
+  const u = unitPrice(p, qty || 1);
+  return u !== p.precio
+    ? `<s class="price-old">${escapeHtml(formatGs(p.precio))}</s> ${escapeHtml(formatGs(u))}`
+    : escapeHtml(formatGs(p.precio));
+}
+
 function drawProductos(q) {
   const matches = [];
   let total = 0;
+  const counts = { todos: 0, productos: 0, combos: 0 };
   for (const p of state.productos) {
-    if (matchesQuery(p._idx, q)) {
+    if (!matchesQuery(p._idx, q)) continue;
+    counts.todos++;
+    counts[p.esCombo ? 'combos' : 'productos']++;
+    const enTab = state.prodTab === 'todos' || (state.prodTab === 'combos') === !!p.esCombo;
+    if (enTab) {
       total++;
       if (matches.length < MAX_RESULTS) matches.push(p);
     }
   }
+  for (const b of document.querySelectorAll('#prod-tabs [data-tab]')) {
+    const on = b.dataset.tab === state.prodTab;
+    b.classList.toggle('is-active', on);
+    b.setAttribute('aria-selected', String(on));
+  }
+  for (const el of document.querySelectorAll('#prod-tabs [data-count]')) el.textContent = `(${formatNum(counts[el.dataset.count])})`;
   $('#prod-meta').textContent = total > MAX_RESULTS
     ? `Mostrando ${MAX_RESULTS} de ${formatNum(total)} productos. Escribí más para afinar la búsqueda.`
     : total ? `${formatNum(total)} producto${total === 1 ? '' : 's'}` : '';
+  const tabLabel = { todos: 'productos', productos: 'productos sueltos', combos: 'combos' }[state.prodTab];
   $('#prod-list').innerHTML = matches.length
     ? matches.map(productRow).join('')
-    : `<li class="empty empty--sm">No hay productos que coincidan con “${escapeHtml(q)}”.</li>`;
+    : q
+      ? `<li class="empty empty--sm">No hay ${tabLabel} que coincidan con “${escapeHtml(q)}”.</li>`
+      : `<li class="empty empty--sm">No hay ${tabLabel} en el catálogo.</li>`;
 }
 
 /** Cambia la cantidad de un SKU y actualiza solo lo necesario del DOM. */
@@ -967,6 +1039,7 @@ function drawCart() {
           <div class="cart__info">
             <span class="cart__name">${comboBadge(l)}${escapeHtml(l.descripcion)}</span>
             <span class="cart__meta">${escapeHtml(formatGs(l.precio))} c/u · <strong>${escapeHtml(formatGs(l.subtotal))}</strong></span>
+            ${cartTierHint(l)}
           </div>
           ${qtyControl(l.sku, l.cantidad, l.descripcion)}
           <button type="button" class="icon-btn icon-btn--sm" data-qty-op="del" data-sku="${escapeHtml(l.sku)}" aria-label="Quitar ${escapeHtml(l.descripcion)}">✕</button>
@@ -981,6 +1054,13 @@ function drawCart() {
   if (tot) tot.textContent = formatGs(total);
   const btn = $('#to-confirm');
   if (btn) btn.disabled = items === 0;
+}
+
+/** Aviso de escala en el carrito (usa el producto actual del catálogo). */
+function cartTierHint(l) {
+  const p = state.productosBySku.get(l.sku);
+  const h = p && !p.esCombo ? tierHintHtml(p, l.cantidad) : '';
+  return h ? `<span class="cart__hint">${h}</span>` : '';
 }
 
 // ---------- Paso 3: Confirmar ----------
@@ -1011,7 +1091,7 @@ function renderStepConfirmar() {
         <span class="field__label">Observaciones (opcional)</span>
         <textarea class="input textarea" id="obs" rows="3" maxlength="500" placeholder="Ej.: entregar el lunes, contacto en sucursal, etc.">${escapeHtml(state.draft.observaciones)}</textarea>
       </label>
-      <p class="form__hint">Los precios son los de la lista del evento. El pedido se guarda en la tablet y se envía automáticamente cuando haya señal.</p>
+      <p class="form__hint">Los precios son los de la lista del evento (con el precio por cantidad aplicado cuando corresponde). El pedido se guarda en la tablet y se envía automáticamente cuando haya señal.</p>
     </div>
     <div class="cartbar">
       <button type="button" class="btn btn--ghost btn--lg" id="back-products">← Editar productos</button>

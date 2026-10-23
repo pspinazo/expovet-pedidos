@@ -329,6 +329,20 @@ code { font-family: var(--mono); font-size: .9em; }
 .product__name { font-weight: 700; font-size: 1.08rem; }
 .product__meta { color: var(--ink-3); font-size: .88rem; }
 .product__price { font-weight: 750; color: var(--green-800); font-size: 1.05rem; margin-top: 2px; }
+.price-old { color: var(--ink-3); font-weight: 500; font-size: .92rem; margin-right: 2px; }
+.product__tiers { font-size: .92rem; color: var(--ink-2); margin-top: 2px; }
+.product__hint, .cart__hint { display: block; margin-top: 3px; }
+.tier-hint { display: inline-block; font-size: .85rem; font-weight: 650; padding: 2px 8px; border-radius: 999px; background: #FFF4D6; color: #7A5200; }
+.tier-hint--ok { background: #E3F4E6; color: var(--green-800); }
+.tabs { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.tabs__btn {
+  min-height: 44px; padding: 8px 16px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-weight: 650; color: var(--ink-2); background: var(--card);
+  border: 2px solid var(--line-2);
+}
+.tabs__btn.is-active { background: var(--green); border-color: var(--green); color: #fff; }
+.tabs__btn:focus-visible { outline: 3px solid var(--amber); outline-offset: 2px; }
+.tabs__count { font-weight: 500; opacity: .85; }
 .product__subtotal { color: var(--ink-2); font-weight: 600; font-size: .95rem; }
 .product__qty { flex: none; }
 /* Combos: etiqueta y contenido del pack */
