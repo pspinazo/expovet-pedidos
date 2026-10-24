@@ -248,12 +248,15 @@ function clientAddressHtml(c) {
 /** Texto extra de búsqueda de un combo: la palabra "combo" + SKU y descripción de sus componentes. */
 function comboSearchText(p) {
   if (!p.esCombo) return '';
-  return `combo ${(p.componentes || []).map((c) => `${c.sku} ${c.descripcion}`).join(' ')}`;
+  const partes = (p.componentes || []).concat(p.estructura || []); // productos reales + kits (packs armados con kits)
+  return `combo ${partes.map((c) => `${c.sku} ${c.descripcion}`).join(' ')}`;
 }
 
 /** Contenido de un combo en una línea: "2× Alimento X · 1× Antipulgas Y". */
 function comboContents(p) {
-  return (p.componentes || []).map((c) => `${formatNum(c.cantidad)}× ${c.descripcion}`).join(' · ');
+  // Pack armado con kits: se muestra lo que se cargó (kits + productos), no los productos aplanados.
+  const partes = Array.isArray(p.estructura) && p.estructura.length ? p.estructura : (p.componentes || []);
+  return partes.map((c) => `${formatNum(c.cantidad)}× ${c.descripcion}`).join(' · ');
 }
 
 /** Etiqueta "COMBO" (vacía si no es combo). */
