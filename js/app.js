@@ -282,6 +282,13 @@ function toStoredProducto(p) {
         .filter((t) => t.min >= 1 && t.precio > 0).sort((a, b) => a.min - b.min)
       : [],
     imagen: typeof p.imagen === 'string' ? p.imagen : '',
+    exhibidor: !p.esCombo && p.exhibidor && Array.isArray(p.exhibidor.skus) && p.exhibidor.skus.length
+      ? {
+        skus: p.exhibidor.skus.map(String),
+        minCantidad: Number(p.exhibidor.minCantidad) || 0,
+        minMonto: Number(p.exhibidor.minMonto) || 0,
+      }
+      : null,
   };
 }
 
@@ -301,6 +308,7 @@ function precioEspecial(p) {
  * Es la misma regla que aplica el servidor al grabar, así el total de la tablet coincide con el Sheet.
  */
 function unitPrice(p, qty) {
+  if (p.exhibidor) return 0; // exhibidor: sin cargo
   let precio = p.precio;
   for (const t of p.escalas || []) if (qty >= t.min) precio = t.precio;
   return precio;
@@ -325,6 +333,81 @@ function tierHintHtml(p, qty) {
   if (unitPrice(p, qty) < unitPrice(p, 1)) partes.push('<span class="tier-hint tier-hint--ok">✔ Precio por cantidad aplicado</span>');
   if (next) partes.push(`<span class="tier-hint">Faltan ${formatNum(next.faltan)} u para ${escapeHtml(formatGs(next.precio))} c/u</span>`);
   return partes.join(' ');
+}
+
+// ---------- Exhibidores (sin cargo por compra mínima) ----------
+
+/**
+ * Avance del carrito hacia el mínimo de un exhibidor: unidades y monto (precio final) de los
+ * SKU de su lista, sueltos o dentro de combos. Misma regla que aplica el servidor al grabar.
+ */
+function exhibidorAvance(p, items = state.draft.items) {
+  const e = p.exhibidor;
+  const lista = new Set(e.skus.map((s) => s.toUpperCase()));
+  let unidades = 0;
+  let monto = 0;
+  for (const [sku, qty] of Object.entries(items)) {
+    const q = state.productosBySku.get(sku);
+    if (!q || q.exhibidor || !(qty > 0)) continue;
+    if (q.esCombo) {
+      for (const c of q.componentes || []) {
+        if (!lista.has(String(c.sku).toUpperCase())) continue;
+        unidades += c.cantidad * qty;
+        monto += c.cantidad * c.precio * qty;
+      }
+    } else if (lista.has(String(sku).toUpperCase())) {
+      unidades += qty;
+      monto += unitPrice(q, qty) * qty;
+    }
+  }
+  const cumple = (!e.minCantidad || unidades >= e.minCantidad) && (!e.minMonto || monto >= e.minMonto);
+  return { unidades, monto, cumple };
+}
+
+/** Exhibidores que el carrito actual habilita. */
+function exhibidoresHabilitados() {
+  return state.productos.filter((p) => p.exhibidor && exhibidorAvance(p).cumple);
+}
+
+/**
+ * Mantiene el carrito en regla: quita exhibidores que dejaron de cumplir el mínimo y avisa
+ * cuando aparece uno nuevo. Devuelve true si cambió qué exhibidores se ven (hay que redibujar la lista).
+ */
+function revisarExhibidores({ avisar = true } = {}) {
+  if (!state.draft) return false;
+  const ok = new Set(exhibidoresHabilitados().map((p) => p.sku));
+  for (const sku of Object.keys(state.draft.items)) {
+    const p = state.productosBySku.get(sku);
+    if (!p || !p.exhibidor) continue;
+    if (!ok.has(sku)) {
+      delete state.draft.items[sku];
+      persistDraft();
+      if (avisar) toast(`Se quitó el exhibidor “${p.descripcion}”: el pedido ya no llega a la compra mínima.`, 'warn', 5000);
+    } else if (state.draft.items[sku] > 1) {
+      state.draft.items[sku] = 1;
+      persistDraft();
+    }
+  }
+  const antes = state.exhOk || new Set();
+  const nuevos = [...ok].filter((s) => !antes.has(s));
+  const cambio = nuevos.length > 0 || [...antes].some((s) => !ok.has(s));
+  if (avisar) {
+    for (const s of nuevos) {
+      if (state.draft.items[s]) continue;
+      toast(`🎁 El pedido califica para el exhibidor “${state.productosBySku.get(s).descripcion}” sin cargo. Agregalo desde el carrito.`, 'ok', 5000);
+    }
+  }
+  state.exhOk = ok;
+  return cambio;
+}
+
+/** "10 u de A100, B400" / "Gs 1.000.000 de B300" (texto de la condición). */
+function exhibidorCondicion(p) {
+  const e = p.exhibidor;
+  const partes = [];
+  if (e.minCantidad) partes.push(`${formatNum(e.minCantidad)} u`);
+  if (e.minMonto) partes.push(formatGs(e.minMonto));
+  return `Por compra de ${partes.join(' y ')} de ${e.skus.join(', ')}`;
 }
 
 /**
@@ -398,6 +481,7 @@ function redrawOrderLists(cartChanged = false) {
   // Una cantidad que se está escribiendo (aún sin "change") no se pierde al redibujar.
   const act = document.activeElement;
   if (act && act.matches && act.matches('input[data-qty-input]')) setQty(act.dataset.sku, clampInt(act.value, 0, MAX_QTY));
+  revisarExhibidores();
   const cliQ = $('#cli-q');
   if (cliQ) drawClientes(normalizeText(cliQ.value));
   const prodQ = $('#prod-q');
@@ -737,6 +821,7 @@ function cartLines() {
       sku, descripcion: p.descripcion, marca: p.marca, codBarra: p.codBarra,
       precio: unitPrice(p, qty), precioLista: p.precio, cantidad: qty, subtotal: unitPrice(p, qty) * qty,
       esCombo: !!p.esCombo, contenido: p.esCombo ? comboContents(p) : '',
+      esExhibidor: !!p.exhibidor,
     });
   }
   return lines;
@@ -952,6 +1037,7 @@ function renderStepProductos() {
     el.addEventListener('focusin', onFocus);
   }
 
+  revisarExhibidores({ avisar: false });
   draw();
   drawCart();
   if (window.matchMedia('(min-width: 900px)').matches) input.focus();
@@ -973,6 +1059,7 @@ function qtyControl(sku, qty, label) {
 function productRow(p) {
   const qty = state.draft.items[p.sku] || 0;
   const img = imageUrl(p);
+  if (p.exhibidor) return exhibidorRow(p, qty, img);
   return `<li class="product ${qty ? 'is-in-cart' : ''}${p.esCombo ? ' product--combo' : ''}${img ? ' product--img' : ''}" data-row="${escapeHtml(p.sku)}">
     ${img ? `<button type="button" class="product__thumb" data-img="${escapeHtml(p.sku)}" aria-label="Ver imagen de ${escapeHtml(p.descripcion)}"><img src="${img}" alt="" loading="lazy" width="72" height="72" onerror="this.parentNode.classList.add('is-broken')"></button>` : ''}
     <div class="product__info">
@@ -987,8 +1074,26 @@ function productRow(p) {
   </li>`;
 }
 
+/** Fila de un exhibidor habilitado: sin cargo, 1 por pedido. */
+function exhibidorRow(p, qty, img) {
+  const s = escapeHtml(p.sku);
+  return `<li class="product product--exh ${qty ? 'is-in-cart' : ''}${img ? ' product--img' : ''}" data-row="${s}">
+    ${img ? `<button type="button" class="product__thumb" data-img="${s}" aria-label="Ver imagen de ${escapeHtml(p.descripcion)}"><img src="${img}" alt="" loading="lazy" width="72" height="72" onerror="this.parentNode.classList.add('is-broken')"></button>` : ''}
+    <div class="product__info">
+      <span class="product__name"><span class="badge-exh">🎁 EXHIBIDOR SIN CARGO</span> ${escapeHtml(p.descripcion)}</span>
+      <span class="product__meta">${escapeHtml(p.marca)} · SKU <span class="mono">${s}</span></span>
+      <span class="product__price">${priceHtml(p, 1)}</span>
+      <span class="product__hint"><span class="tier-hint tier-hint--ok">✔ ${escapeHtml(exhibidorCondicion(p))}</span></span>
+    </div>
+    <div class="product__qty">${qty
+      ? `<span class="exh-in">✓ Incluido</span> <button type="button" class="btn btn--ghost btn--danger-text" data-qty-op="del" data-sku="${s}">Quitar</button>`
+      : `<button type="button" class="btn btn--primary-soft qty-add" data-qty-op="inc" data-sku="${s}" aria-label="Agregar ${escapeHtml(p.descripcion)} sin cargo">+ Agregar sin cargo</button>`}</div>
+  </li>`;
+}
+
 /** Precio de la fila: si la escala bajó el precio, muestra el de lista tachado. */
 function priceHtml(p, qty) {
+  if (p.exhibidor) return `<s class="price-old">${escapeHtml(formatGs(p.precio))}</s> <strong class="price-free">Sin cargo</strong>`;
   const u = unitPrice(p, qty || 1);
   return u !== p.precio
     ? `<s class="price-old">${escapeHtml(formatGs(p.precio))}</s> ${escapeHtml(formatGs(u))}`
@@ -999,7 +1104,11 @@ function drawProductos(q) {
   const matches = [];
   let total = 0;
   const counts = { todos: 0, productos: 0, combos: 0 };
-  for (const p of state.productos) {
+  // Exhibidores: ocultos hasta que el carrito cumple la compra mínima; los habilitados van primero.
+  const ok = state.exhOk || new Set();
+  const lista = state.productos.filter((p) => p.exhibidor && ok.has(p.sku))
+    .concat(state.productos.filter((p) => !p.exhibidor));
+  for (const p of lista) {
     if (!matchesQuery(p._idx, q)) continue;
     counts.todos++;
     counts[p.esCombo ? 'combos' : 'productos']++;
@@ -1029,12 +1138,26 @@ function drawProductos(q) {
 /** Cambia la cantidad de un SKU y actualiza solo lo necesario del DOM. */
 function setQty(sku, qty) {
   qty = Math.max(0, Math.min(MAX_QTY, Math.floor(Number(qty) || 0)));
+  const p = state.productosBySku.get(sku);
+  if (p && p.exhibidor && qty > 0) {
+    if (!exhibidorAvance(p).cumple) {
+      toast(`El exhibidor “${p.descripcion}” se habilita con la compra mínima: ${exhibidorCondicion(p)}.`, 'warn', 5000);
+      return;
+    }
+    qty = 1; // máximo 1 por pedido
+  }
   if (qty === 0) delete state.draft.items[sku];
   else state.draft.items[sku] = qty;
   persistDraft();
 
+  // Si cambió qué exhibidores corresponden, se redibuja la lista completa.
+  if (revisarExhibidores()) {
+    const prodQ = $('#prod-q');
+    if (prodQ) drawProductos(normalizeText(prodQ.value));
+    drawCart();
+    return;
+  }
   const row = document.querySelector(`#prod-list [data-row="${CSS.escape(sku)}"]`);
-  const p = state.productosBySku.get(sku);
   if (row && p) {
     const hadFocus = row.contains(document.activeElement) && document.activeElement.matches('[data-qty-op]')
       ? document.activeElement.dataset.qtyOp : null;
@@ -1055,17 +1178,22 @@ function drawCart() {
   const { lines, items, unidades, total } = cartTotals();
   const list = $('#cart-list');
   if (list) {
-    list.innerHTML = lines.length
-      ? lines.map((l) => `<li class="cart__item">
+    const ofertas = exhibidoresHabilitados().filter((p) => !state.draft.items[p.sku]);
+    list.innerHTML = (lines.length
+      ? lines.map((l) => `<li class="cart__item${l.esExhibidor ? ' cart__item--exh' : ''}">
           <div class="cart__info">
-            <span class="cart__name">${comboBadge(l)}${escapeHtml(l.descripcion)}</span>
-            <span class="cart__meta">${escapeHtml(formatGs(l.precio))} c/u · <strong>${escapeHtml(formatGs(l.subtotal))}</strong></span>
+            <span class="cart__name">${comboBadge(l)}${l.esExhibidor ? '<span class="badge-exh">🎁 EXHIBIDOR</span> ' : ''}${escapeHtml(l.descripcion)}</span>
+            <span class="cart__meta">${l.esExhibidor ? '1 u · <strong>Sin cargo</strong>' : `${escapeHtml(formatGs(l.precio))} c/u · <strong>${escapeHtml(formatGs(l.subtotal))}</strong>`}</span>
             ${cartTierHint(l)}
           </div>
-          ${qtyControl(l.sku, l.cantidad, l.descripcion)}
+          ${l.esExhibidor ? '' : qtyControl(l.sku, l.cantidad, l.descripcion)}
           <button type="button" class="icon-btn icon-btn--sm" data-qty-op="del" data-sku="${escapeHtml(l.sku)}" aria-label="Quitar ${escapeHtml(l.descripcion)}">✕</button>
         </li>`).join('')
-      : '<li class="empty empty--sm">El carrito está vacío. Buscá productos y tocá “+ Agregar”.</li>';
+      : '<li class="empty empty--sm">El carrito está vacío. Buscá productos y tocá “+ Agregar”.</li>')
+      + ofertas.map((p) => `<li class="cart__offer">
+          <span class="cart__offer-text">🎁 Este pedido califica para <strong>${escapeHtml(p.descripcion)}</strong> sin cargo</span>
+          <button type="button" class="btn btn--primary-soft" data-qty-op="inc" data-sku="${escapeHtml(p.sku)}">+ Agregar</button>
+        </li>`).join('');
   }
   const side = $('#cart-total-side');
   if (side) side.textContent = formatGs(total);
@@ -1132,9 +1260,9 @@ function renderStepConfirmar() {
         <table class="table">
           <thead><tr><th scope="col">Producto</th><th scope="col" class="num">Cant.</th><th scope="col" class="num">Precio</th><th scope="col" class="num">Subtotal</th></tr></thead>
           <tbody>${lines.map((l) => `<tr>
-            <td><span class="cell-main">${comboBadge(l)}${escapeHtml(l.descripcion)}</span><span class="cell-sub">${escapeHtml(l.marca)} · ${escapeHtml(l.sku)}</span>${l.esCombo ? `<span class="cell-sub">${escapeHtml(l.contenido)}</span>` : ''}</td>
+            <td><span class="cell-main">${comboBadge(l)}${l.esExhibidor ? '<span class="badge-exh">🎁 EXHIBIDOR</span> ' : ''}${escapeHtml(l.descripcion)}</span><span class="cell-sub">${escapeHtml(l.marca)} · ${escapeHtml(l.sku)}</span>${l.esCombo ? `<span class="cell-sub">${escapeHtml(l.contenido)}</span>` : ''}</td>
             <td class="num">${escapeHtml(formatNum(l.cantidad))}</td>
-            <td class="num">${escapeHtml(formatGs(l.precio))}</td>
+            <td class="num">${l.esExhibidor ? 'Sin cargo' : escapeHtml(formatGs(l.precio))}</td>
             <td class="num">${escapeHtml(formatGs(l.subtotal))}</td>
           </tr>`).join('')}</tbody>
           <tfoot><tr><th scope="row" colspan="3">Total · ${items} producto${items === 1 ? '' : 's'}, ${escapeHtml(formatNum(unidades))} u.</th><td class="num total-cell">${escapeHtml(formatGs(total))}</td></tr></tfoot>
@@ -1162,6 +1290,7 @@ async function confirmOrder() {
   const btn = $('#confirm-btn');
   const obs = $('#obs');
   if (obs) state.draft.observaciones = obs.value;
+  revisarExhibidores();
   const { lines, total } = cartTotals();
   if (!state.draft.cliente || lines.length === 0) { toast('El pedido está incompleto.', 'warn'); return; }
 
@@ -1181,7 +1310,7 @@ async function confirmOrder() {
       codCliente: cliente.id,
       cliente,
       observaciones,
-      lineas: lines.map(({ sku, descripcion, marca, precio, cantidad, subtotal, esCombo, contenido }) => ({ sku, descripcion, marca, precio, cantidad, subtotal, esCombo, contenido })),
+      lineas: lines.map(({ sku, descripcion, marca, precio, cantidad, subtotal, esCombo, contenido, esExhibidor }) => ({ sku, descripcion, marca, precio, cantidad, subtotal, esCombo, contenido, esExhibidor })),
       total,
       estado: db.ESTADOS.PENDIENTE,
       mensaje: '',
@@ -1319,13 +1448,14 @@ function pedidoItem(p, open) {
       ${p.estado === 'error' ? `<p class="notice notice--error"><strong>Motivo:</strong> ${escapeHtml(p.mensaje || 'Error desconocido')}</p>` : ''}
       ${p.estado === 'pendiente' && p.ultimoFallo ? `<p class="notice notice--warn">Último intento ${escapeHtml(timeAgo(p.ultimoIntento))}: ${escapeHtml(p.ultimoFallo)}</p>` : ''}
       ${p.estado === 'enviado' && p.mensaje ? `<p class="note">${escapeHtml(p.mensaje)}</p>` : ''}
+      ${p.estado === 'enviado' && p.aviso ? `<p class="notice notice--warn"><strong>Aviso del servidor:</strong> ${escapeHtml(p.aviso)}</p>` : ''}
       <p class="order-item__clientfull">${escapeHtml(c.razonSocial || '')} · <span class="mono">${escapeHtml(p.codCliente)}</span></p>
       <div class="table-wrap"><table class="table table--compact">
         <thead><tr><th scope="col">Producto</th><th scope="col" class="num">Cant.</th><th scope="col" class="num">Precio</th><th scope="col" class="num">Subtotal</th></tr></thead>
         <tbody>${p.lineas.map((l) => `<tr>
-          <td><span class="cell-main">${comboBadge(l)}${escapeHtml(l.descripcion)}</span><span class="cell-sub">${escapeHtml(l.sku)}</span>${l.esCombo && l.contenido ? `<span class="cell-sub">${escapeHtml(l.contenido)}</span>` : ''}</td>
+          <td><span class="cell-main">${comboBadge(l)}${l.esExhibidor ? '<span class="badge-exh">🎁 EXHIBIDOR</span> ' : ''}${escapeHtml(l.descripcion)}</span><span class="cell-sub">${escapeHtml(l.sku)}</span>${l.esCombo && l.contenido ? `<span class="cell-sub">${escapeHtml(l.contenido)}</span>` : ''}</td>
           <td class="num">${escapeHtml(formatNum(l.cantidad))}</td>
-          <td class="num">${escapeHtml(formatGs(l.precio))}</td>
+          <td class="num">${l.esExhibidor ? 'Sin cargo' : escapeHtml(formatGs(l.precio))}</td>
           <td class="num">${escapeHtml(formatGs(l.subtotal))}</td></tr>`).join('')}</tbody>
       </table></div>
       ${p.observaciones ? `<p><strong>Observaciones:</strong> ${escapeHtml(p.observaciones)}</p>` : ''}

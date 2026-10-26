@@ -337,6 +337,20 @@ code { font-family: var(--mono); font-size: .9em; }
   display: inline-block; font-size: .72rem; font-weight: 800; letter-spacing: .03em; vertical-align: 2px;
   padding: 2px 7px; border-radius: 6px; background: #FFE08A; color: #6B4A00;
 }
+/* Exhibidores sin cargo */
+.badge-exh {
+  display: inline-block; font-size: .72rem; font-weight: 800; letter-spacing: .03em; vertical-align: 2px;
+  padding: 2px 7px; border-radius: 6px; background: #E6DDFB; color: #4A2C99;
+}
+.product--exh { background: #F7F3FF; border-left: 4px solid #7B5BD6; }
+.price-free { color: #4A2C99; }
+.exh-in { font-weight: 750; color: var(--green-800); white-space: nowrap; }
+.cart__item--exh .cart__meta strong { color: #4A2C99; }
+.cart__offer {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: #F7F3FF; border: 1px dashed #7B5BD6;
+}
+.cart__offer-text { font-size: .95rem; color: #2E1B66; }
 .img-view { margin: 0; text-align: center; }
 .img-view img { max-width: 100%; max-height: 65vh; object-fit: contain; border-radius: 8px; background: #fff; }
 .img-view figcaption { margin-top: 8px; color: var(--ink-3); font-size: .9rem; }

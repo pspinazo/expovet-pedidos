@@ -96,7 +96,7 @@ async function doProcess(manual, pasada = 0) {
           continue;
         }
         if (r.estado === 'guardado' || r.estado === 'duplicado') {
-          updates.push({ nroPedido: p.nroPedido, changes: { estado: db.ESTADOS.ENVIADO, enviadoEn: now, mensaje: r.estado === 'duplicado' ? 'Ya estaba registrado en el servidor' : '', intentos: (p.intentos || 0) + 1 } });
+          updates.push({ nroPedido: p.nroPedido, changes: { estado: db.ESTADOS.ENVIADO, enviadoEn: now, mensaje: r.estado === 'duplicado' ? 'Ya estaba registrado en el servidor' : '', aviso: r.aviso ? String(r.aviso) : '', intentos: (p.intentos || 0) + 1 } });
           summary.enviados++;
         } else {
           updates.push({ nroPedido: p.nroPedido, changes: { estado: db.ESTADOS.ERROR, mensaje: r.mensaje || 'El servidor rechazó el pedido', intentos: (p.intentos || 0) + 1, ultimoIntento: now } });
