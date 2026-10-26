@@ -288,6 +288,8 @@ function toStoredProducto(p) {
         minCantidad: Number(p.exhibidor.minCantidad) || 0,
         minMonto: Number(p.exhibidor.minMonto) || 0,
         grupo: String(p.exhibidor.grupo || `SKU:${p.sku}`),
+        marcas: Array.isArray(p.exhibidor.marcas) ? p.exhibidor.marcas.map(String) : [],
+        listados: Array.isArray(p.exhibidor.listados) ? p.exhibidor.listados.map(String) : [],
       }
       : null,
   };
@@ -431,7 +433,10 @@ function exhibidorCondicion(p) {
   const partes = [];
   if (e.minCantidad) partes.push(`${formatNum(e.minCantidad)} u`);
   if (e.minMonto) partes.push(formatGs(e.minMonto));
-  return `Por compra de ${partes.join(' y ')} de ${e.skus.join(', ')}`;
+  const de = e.marcas && e.marcas.length
+    ? `la marca ${e.marcas.join(', ')}${e.listados.length ? ` + ${e.listados.join(', ')}` : ''}`
+    : e.skus.join(', ');
+  return `Por compra de ${partes.join(' y ')} de ${de}`;
 }
 
 /**
