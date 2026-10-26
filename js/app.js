@@ -287,6 +287,7 @@ function toStoredProducto(p) {
         skus: p.exhibidor.skus.map(String),
         minCantidad: Number(p.exhibidor.minCantidad) || 0,
         minMonto: Number(p.exhibidor.minMonto) || 0,
+        grupo: String(p.exhibidor.grupo || `SKU:${p.sku}`),
       }
       : null,
   };
@@ -364,9 +365,24 @@ function exhibidorAvance(p, items = state.draft.items) {
   return { unidades, monto, cumple };
 }
 
-/** Exhibidores que el carrito actual habilita. */
+/**
+ * Exhibidores que el carrito actual habilita: de cada grupo de alternativos, solo el de
+ * mayor nivel (mayor monto mínimo, luego mayor cantidad mínima) que se alcanza.
+ */
 function exhibidoresHabilitados() {
-  return state.productos.filter((p) => p.exhibidor && exhibidorAvance(p).cumple);
+  const mejor = new Map();
+  for (const p of state.productos) {
+    if (!p.exhibidor || !exhibidorAvance(p).cumple) continue;
+    const g = p.exhibidor.grupo;
+    const actual = mejor.get(g);
+    if (!actual || nivelExhibidor(p, actual) < 0) mejor.set(g, p);
+  }
+  return [...mejor.values()];
+}
+
+/** Orden por nivel (negativo = a es de nivel más alto que b). Igual que nivelExhibidor_ del servidor. */
+function nivelExhibidor(a, b) {
+  return (b.exhibidor.minMonto - a.exhibidor.minMonto) || (b.exhibidor.minCantidad - a.exhibidor.minCantidad);
 }
 
 /**
@@ -375,14 +391,22 @@ function exhibidoresHabilitados() {
  */
 function revisarExhibidores({ avisar = true } = {}) {
   if (!state.draft) return false;
-  const ok = new Set(exhibidoresHabilitados().map((p) => p.sku));
+  const habilitados = exhibidoresHabilitados();
+  const ok = new Set(habilitados.map((p) => p.sku));
   for (const sku of Object.keys(state.draft.items)) {
     const p = state.productosBySku.get(sku);
     if (!p || !p.exhibidor) continue;
     if (!ok.has(sku)) {
       delete state.draft.items[sku];
       persistDraft();
-      if (avisar) toast(`Se quitó el exhibidor “${p.descripcion}”: el pedido ya no llega a la compra mínima.`, 'warn', 5000);
+      // ¿Corresponde otro exhibidor del mismo grupo (alternativo)? Se reemplaza solo.
+      const alt = habilitados.find((x) => x.exhibidor.grupo === p.exhibidor.grupo);
+      if (alt) {
+        state.draft.items[alt.sku] = 1;
+        if (avisar) toast(`Se cambió el exhibidor “${p.descripcion}” por “${alt.descripcion}” (corresponde uno solo por pedido).`, 'ok', 5000);
+      } else if (avisar) {
+        toast(`Se quitó el exhibidor “${p.descripcion}”: el pedido ya no llega a la compra mínima.`, 'warn', 5000);
+      }
     } else if (state.draft.items[sku] > 1) {
       state.draft.items[sku] = 1;
       persistDraft();
@@ -393,7 +417,7 @@ function revisarExhibidores({ avisar = true } = {}) {
   const cambio = nuevos.length > 0 || [...antes].some((s) => !ok.has(s));
   if (avisar) {
     for (const s of nuevos) {
-      if (state.draft.items[s]) continue;
+      if (state.draft.items[s]) continue; // ya está (o se reemplazó solo)
       toast(`🎁 El pedido califica para el exhibidor “${state.productosBySku.get(s).descripcion}” sin cargo. Agregalo desde el carrito.`, 'ok', 5000);
     }
   }
@@ -1093,7 +1117,7 @@ function exhibidorRow(p, qty, img) {
 
 /** Precio de la fila: si la escala bajó el precio, muestra el de lista tachado. */
 function priceHtml(p, qty) {
-  if (p.exhibidor) return `<s class="price-old">${escapeHtml(formatGs(p.precio))}</s> <strong class="price-free">Sin cargo</strong>`;
+  if (p.exhibidor) return `${p.precio > 0 ? `<s class="price-old">${escapeHtml(formatGs(p.precio))}</s> ` : ''}<strong class="price-free">Sin cargo</strong>`;
   const u = unitPrice(p, qty || 1);
   return u !== p.precio
     ? `<s class="price-old">${escapeHtml(formatGs(p.precio))}</s> ${escapeHtml(formatGs(u))}`
