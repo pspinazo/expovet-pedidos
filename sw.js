@@ -4,8 +4,9 @@
  * - Al cambiar SHELL_VERSION se descarga el shell nuevo y se borran cachés viejas.
  * Rutas relativas para funcionar bajo un subpath de GitHub Pages (ej. /expovet-pedidos/).
  */
-const SHELL_VERSION = 'v1.3.1';
+const SHELL_VERSION = 'v1.4.0';
 const CACHE_NAME = `expovet-shell-${SHELL_VERSION}`;
+const IMG_CACHE = 'expovet-img'; // imágenes de productos: NO se borra al cambiar de versión
 
 const SHELL_FILES = [
   './',
@@ -66,6 +67,17 @@ self.addEventListener('fetch', (event) => {
       caches.match('./index.html', { ignoreSearch: true })
         .then((cached) => cached || fetch(request))
         .catch(() => caches.match('./', { ignoreSearch: true }))
+    );
+    return;
+  }
+
+  // Imágenes de productos (carpeta img/): primero el caché de imágenes, si no la red (y se guarda).
+  if (/\/img\/[^/]+$/.test(url.pathname)) {
+    event.respondWith(
+      caches.open(IMG_CACHE).then((cache) => cache.match(request, { ignoreSearch: true }).then((cached) => cached || fetch(request).then((res) => {
+        if (res && res.ok) cache.put(request, res.clone());
+        return res;
+      })))
     );
     return;
   }

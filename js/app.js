@@ -26,6 +26,7 @@ const MAX_RESULTS = 50;               // tope de resultados renderizados en bús
 const MAX_QTY = 100000;               // igual que la validación del servidor
 const SEARCH_DEBOUNCE_MS = 180;
 const DRAFT_KEY = 'draft';
+const IMG_CACHE = 'expovet-img'; // mismo nombre que en sw.js: imágenes de productos (persisten entre versiones)
 const CATALOG_MAX_AGE_MS = 10 * 60 * 1000; // al abrir la app, refrescar catálogo si es más viejo que esto
 
 // ---------------- Estado global ----------------
@@ -278,9 +279,21 @@ function toStoredProducto(p) {
       : [],
     escalas: !p.esCombo && Array.isArray(p.escalas)
       ? p.escalas.map((t) => ({ min: Number(t.min) || 0, precio: Number(t.precio) || 0 }))
-        .filter((t) => t.min >= 2 && t.precio > 0).sort((a, b) => a.min - b.min)
+        .filter((t) => t.min >= 1 && t.precio > 0).sort((a, b) => a.min - b.min)
       : [],
+    imagen: typeof p.imagen === 'string' ? p.imagen : '',
   };
+}
+
+/** URL de la imagen del producto (carpeta img/ de la app) o '' si no tiene. */
+function imageUrl(p) {
+  return p && p.imagen ? `./img/${encodeURIComponent(p.imagen)}` : '';
+}
+
+/** Precio especial de la Expo (tramo con mínimo 1) si existe y es menor que la lista. */
+function precioEspecial(p) {
+  const t = (p.escalas || []).find((x) => x.min === 1);
+  return t && t.precio < p.precio ? t.precio : null;
 }
 
 /**
@@ -295,21 +308,21 @@ function unitPrice(p, qty) {
 
 /** Próximo tramo que todavía no se alcanzó ({ min, precio, faltan }) o null. */
 function nextTier(p, qty) {
-  const t = (p.escalas || []).find((x) => qty < x.min);
+  const t = (p.escalas || []).find((x) => x.min >= 2 && qty < x.min);
   return t ? { ...t, faltan: t.min - qty } : null;
 }
 
 /** "12+ u: 55.000 · 24+ u: 52.000" (vacío si no hay escala). */
 function tiersText(p) {
-  return (p.escalas || []).map((t) => `${formatNum(t.min)}+ u: ${formatGs(t.precio)}`).join(' · ');
+  return (p.escalas || []).filter((t) => t.min >= 2).map((t) => `${formatNum(t.min)}+ u: ${formatGs(t.precio)}`).join(' · ');
 }
 
 /** Aviso de escala para una cantidad dada (HTML): precio aplicado y/o cuánto falta para el próximo tramo. */
 function tierHintHtml(p, qty) {
-  if (!p.escalas || !p.escalas.length || !qty) return '';
+  if (!tiersText(p) || !qty) return '';
   const next = nextTier(p, qty);
   const partes = [];
-  if (unitPrice(p, qty) !== p.precio) partes.push('<span class="tier-hint tier-hint--ok">✔ Precio por cantidad aplicado</span>');
+  if (unitPrice(p, qty) < unitPrice(p, 1)) partes.push('<span class="tier-hint tier-hint--ok">✔ Precio por cantidad aplicado</span>');
   if (next) partes.push(`<span class="tier-hint">Faltan ${formatNum(next.faltan)} u para ${escapeHtml(formatGs(next.precio))} c/u</span>`);
   return partes.join(' ');
 }
@@ -335,6 +348,7 @@ async function refreshCatalog({ silent = false, background = false } = {}) {
     await loadMasterData();
     applySessionToHeader();
     updateBanner();
+    prefetchImages(); // en segundo plano, no bloquea
     if (!silent) toast(`Catálogo actualizado: ${formatNum(state.productos.length)} productos, ${formatNum(state.clientes.length)} clientes`, 'ok');
     return true;
   } catch (err) {
@@ -917,6 +931,8 @@ function renderStepProductos() {
 
   // Delegación de eventos para +/−, agregar y edición directa de cantidad (lista y carrito).
   const onClick = (e) => {
+    const t = e.target.closest('[data-img]');
+    if (t) { showImage(state.productosBySku.get(t.dataset.img)); return; }
     const b = e.target.closest('[data-qty-op]');
     if (!b) return;
     const sku = b.dataset.sku;
@@ -956,13 +972,15 @@ function qtyControl(sku, qty, label) {
 
 function productRow(p) {
   const qty = state.draft.items[p.sku] || 0;
-  return `<li class="product ${qty ? 'is-in-cart' : ''}${p.esCombo ? ' product--combo' : ''}" data-row="${escapeHtml(p.sku)}">
+  const img = imageUrl(p);
+  return `<li class="product ${qty ? 'is-in-cart' : ''}${p.esCombo ? ' product--combo' : ''}${img ? ' product--img' : ''}" data-row="${escapeHtml(p.sku)}">
+    ${img ? `<button type="button" class="product__thumb" data-img="${escapeHtml(p.sku)}" aria-label="Ver imagen de ${escapeHtml(p.descripcion)}"><img src="${img}" alt="" loading="lazy" width="72" height="72" onerror="this.parentNode.classList.add('is-broken')"></button>` : ''}
     <div class="product__info">
-      <span class="product__name">${comboBadge(p)}${escapeHtml(p.descripcion)}</span>
+      <span class="product__name">${comboBadge(p)}${precioEspecial(p) !== null ? '<span class="badge-expo">★ PRECIO EXPO</span> ' : ''}${escapeHtml(p.descripcion)}</span>
       ${p.esCombo ? `<span class="product__combo">${escapeHtml(comboContents(p))}</span>` : ''}
       <span class="product__meta">${escapeHtml(p.marca)} · SKU <span class="mono">${escapeHtml(p.sku)}</span>${p.codBarra ? ` · <span class="mono">${escapeHtml(p.codBarra)}</span>` : ''}</span>
       <span class="product__price">${priceHtml(p, qty)}${qty ? ` <span class="product__subtotal">· Subtotal ${escapeHtml(formatGs(unitPrice(p, qty) * qty))}</span>` : ''}</span>
-      ${p.escalas && p.escalas.length ? `<span class="product__tiers">🏷 ${escapeHtml(tiersText(p))}</span>` : ''}
+      ${tiersText(p) ? `<span class="product__tiers">🏷 ${escapeHtml(tiersText(p))}</span>` : ''}
       ${tierHintHtml(p, qty) ? `<span class="product__hint">${tierHintHtml(p, qty)}</span>` : ''}
     </div>
     <div class="product__qty">${qtyControl(p.sku, qty, p.descripcion)}</div>
@@ -1057,6 +1075,38 @@ function drawCart() {
   if (tot) tot.textContent = formatGs(total);
   const btn = $('#to-confirm');
   if (btn) btn.disabled = items === 0;
+}
+
+/** Imagen del producto en grande (diálogo; se cierra con el botón o Esc). */
+function showImage(p) {
+  if (!p || !imageUrl(p)) return;
+  modal({
+    title: p.descripcion,
+    html: `<figure class="img-view"><img src="${imageUrl(p)}" alt="${escapeHtml(p.descripcion)}"><figcaption>${escapeHtml(p.marca)} · SKU <span class="mono">${escapeHtml(p.sku)}</span></figcaption></figure>`,
+    buttons: [{ label: 'Cerrar', value: true, kind: 'primary' }],
+  });
+}
+
+/**
+ * Descarga a la tablet las imágenes del catálogo que faltan (para verlas sin internet)
+ * y borra las que ya no se usan. Se llama después de actualizar el catálogo.
+ */
+async function prefetchImages() {
+  if (!('caches' in window) || !navigator.onLine) return;
+  try {
+    const urls = [...new Set(state.productos.map(imageUrl).filter(Boolean))].map((u) => new URL(u, location.href).href);
+    const cache = await caches.open(IMG_CACHE);
+    const keys = await cache.keys();
+    const tengo = new Set(keys.map((r) => r.url));
+    for (const r of keys) if (!urls.includes(r.url)) await cache.delete(r);
+    for (const u of urls) {
+      if (tengo.has(u)) continue;
+      try {
+        const res = await fetch(u, { cache: 'reload' });
+        if (res.ok) await cache.put(u, res);
+      } catch { /* sin señal o archivo faltante: se reintenta en la próxima actualización */ }
+    }
+  } catch (err) { console.warn('No se pudieron guardar las imágenes:', err.message); }
 }
 
 /** Aviso de escala en el carrito (usa el producto actual del catálogo). */
@@ -1301,6 +1351,7 @@ function startBackgroundTasks() {
   if (bgStarted) return;
   bgStarted = true;
   checkConnection().then(() => runSync(false));
+  if (isVendor()) prefetchImages(); // completa imágenes que falten (ej. si la última vez no había señal)
   updatePendingBadge();
   setInterval(() => runSync(false), SYNC_INTERVAL_MS);
   setInterval(() => { if (document.visibilityState === 'visible') checkConnection(); }, PING_INTERVAL_MS);
