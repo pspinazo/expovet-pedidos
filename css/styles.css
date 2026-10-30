@@ -345,6 +345,11 @@ code { font-family: var(--mono); font-size: .9em; }
 .product--exh { background: #F7F3FF; border-left: 4px solid #7B5BD6; }
 .price-free { color: #4A2C99; }
 .exh-in { font-weight: 750; color: var(--green-800); white-space: nowrap; }
+.product__bonif { color: #7A3E00; font-weight: 650; }
+.badge-bonif { display: inline-block; font-size: .72rem; font-weight: 800; letter-spacing: .03em; padding: 2px 7px; border-radius: 6px; background: #FFE3C7; color: #7A3E00; vertical-align: 2px; }
+.row-bonif td { background: #FFF7EE; }
+.exh-quedan { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: .8rem; font-weight: 750; background: #EEE8FD; color: #4A2C99; vertical-align: 1px; }
+.exh-quedan.is-pocos { background: var(--amber-50); color: var(--amber-ink); }
 .cart__item--exh .cart__meta strong { color: #4A2C99; }
 .cart__offer {
   display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;

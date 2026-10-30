@@ -22,6 +22,7 @@ import {
 // ---------------- Constantes ----------------
 const SYNC_INTERVAL_MS = 60 * 1000;   // cola de envío
 const PING_INTERVAL_MS = 30 * 1000;   // verificación de conexión real
+const EXH_STOCK_INTERVAL_MS = 60 * 1000; // consulta del stock de exhibidores
 const MAX_RESULTS = 50;               // tope de resultados renderizados en búsquedas
 const MAX_QTY = 100000;               // igual que la validación del servidor
 const SEARCH_DEBOUNCE_MS = 180;
@@ -230,6 +231,7 @@ async function loadMasterData() {
     .map((p) => ({ ...p, _idx: normalizeText(`${p.sku} ${p.codBarra} ${p.marca} ${p.descripcion} ${comboSearchText(p)}`) }))
     .sort((a, b) => String(a.descripcion).localeCompare(String(b.descripcion), 'es'));
   state.productosBySku = new Map(state.productos.map((p) => [String(p.sku), p]));
+  state.exhDisp = null; // el catálogo recién cargado trae los disponibles actualizados
   state.clientes = clientes
     .map((c) => ({ ...c, _idx: normalizeText(`${c.id} ${c.razonSocial} ${c.nombreFantasia}`) }))
     .sort((a, b) => String(a.nombreFantasia || a.razonSocial).localeCompare(String(b.nombreFantasia || b.razonSocial), 'es')
@@ -282,6 +284,12 @@ function toStoredProducto(p) {
         .filter((t) => t.min >= 1 && t.precio > 0).sort((a, b) => a.min - b.min)
       : [],
     imagen: typeof p.imagen === 'string' ? p.imagen : '',
+    bonificacion: !p.esCombo && p.bonificacion && p.bonificacion.sku
+      ? {
+        cada: Number(p.bonificacion.cada) || 0, sku: String(p.bonificacion.sku), cantidad: Number(p.bonificacion.cantidad) || 0,
+        descripcion: String(p.bonificacion.descripcion || ''), nombre: String(p.bonificacion.nombre || ''),
+      }
+      : null,
     exhibidor: !p.esCombo && p.exhibidor && Array.isArray(p.exhibidor.skus) && p.exhibidor.skus.length
       ? {
         skus: p.exhibidor.skus.map(String),
@@ -290,6 +298,8 @@ function toStoredProducto(p) {
         grupo: String(p.exhibidor.grupo || `SKU:${p.sku}`),
         marcas: Array.isArray(p.exhibidor.marcas) ? p.exhibidor.marcas.map(String) : [],
         listados: Array.isArray(p.exhibidor.listados) ? p.exhibidor.listados.map(String) : [],
+        stock: Number.isFinite(Number(p.exhibidor.stock)) && p.exhibidor.stock !== null && p.exhibidor.stock !== undefined ? Number(p.exhibidor.stock) : null,
+        disponibles: Number.isFinite(Number(p.exhibidor.disponibles)) && p.exhibidor.disponibles !== null && p.exhibidor.disponibles !== undefined ? Number(p.exhibidor.disponibles) : null,
       }
       : null,
   };
@@ -379,7 +389,81 @@ function exhibidoresHabilitados() {
     const actual = mejor.get(g);
     if (!actual || nivelExhibidor(p, actual) < 0) mejor.set(g, p);
   }
-  return [...mejor.values()];
+  // Si el que corresponde está agotado, no se ofrece otro del grupo en su lugar.
+  return [...mejor.values()].filter((p) => exhDisponibles(p) !== 0);
+}
+
+// ---------- Bonificaciones (cada N de un producto, M de otro sin cargo) ----------
+
+/** Bonificación que corresponde a una cantidad: { sku, descripcion, cantidad, nombre } o null. */
+function bonifDe(p, qty) {
+  const b = p && p.bonificacion;
+  if (!b || !(b.cada > 0) || !(qty > 0)) return null;
+  const veces = Math.floor(qty / b.cada);
+  return veces ? { sku: b.sku, descripcion: b.descripcion, cantidad: veces * b.cantidad, nombre: b.nombre } : null;
+}
+
+/** Aviso de bonificación en la tarjeta/carrito (HTML). */
+function bonifHintHtml(p, qty) {
+  const b = p && p.bonificacion;
+  if (!b || !(qty > 0)) return '';
+  const ya = bonifDe(p, qty);
+  const faltan = b.cada - (qty % b.cada);
+  const partes = [];
+  if (ya) partes.push(`<span class="tier-hint tier-hint--ok">🎁 + ${formatNum(ya.cantidad)} × ${escapeHtml(b.descripcion)} sin cargo</span>`);
+  partes.push(`<span class="tier-hint">Faltan ${formatNum(faltan)} u para ${formatNum(b.cantidad)} más sin cargo</span>`);
+  return partes.join(' ');
+}
+
+/** Fila "bonificado" debajo del producto en el resumen y en Mis pedidos. */
+function bonifRowHtml(l) {
+  if (!l.bonif) return '';
+  return `<tr class="row-bonif"><td><span class="cell-main"><span class="badge-bonif">🎁 BONIFICADO</span> ${escapeHtml(l.bonif.descripcion)}</span><span class="cell-sub">${escapeHtml(l.bonif.sku)}${l.bonif.nombre ? ` · ${escapeHtml(l.bonif.nombre)}` : ''}</span></td>
+    <td class="num">${escapeHtml(formatNum(l.bonif.cantidad))}</td><td class="num">Sin cargo</td><td class="num">—</td></tr>`;
+}
+
+/**
+ * Unidades disponibles de un exhibidor: null = sin límite. Usa la última consulta al servidor
+ * (cada minuto) y si no hay, lo que vino con el catálogo.
+ */
+function exhDisponibles(p) {
+  if (!p.exhibidor || p.exhibidor.stock === null || p.exhibidor.stock === undefined) return null;
+  if (state.exhDisp && state.exhDisp.has(p.sku)) return state.exhDisp.get(p.sku);
+  return p.exhibidor.disponibles ?? p.exhibidor.stock;
+}
+
+/** "Quedan 3" (vacío si no tiene límite). */
+function quedanHtml(p) {
+  const d = exhDisponibles(p);
+  return d === null ? '' : ` <span class="exh-quedan${d <= 3 ? ' is-pocos' : ''}">Quedan ${formatNum(d)}</span>`;
+}
+
+/**
+ * Consulta liviana del stock de exhibidores (cada minuto con señal, al entrar a Productos y antes
+ * de confirmar). Si alguno se agotó, se quita del carrito y se redibuja.
+ */
+async function refreshExhStock() {
+  if (!isVendor() || !isOnline() || state.exhStockBusy) return;
+  if (!state.productos.some((p) => p.exhibidor && p.exhibidor.stock !== null)) return;
+  state.exhStockBusy = true;
+  try {
+    const data = await api.exhibidores();
+    const m = new Map();
+    const porMayus = new Map(state.productos.map((p) => [p.sku.toUpperCase(), p.sku]));
+    for (const [k, v] of Object.entries(data.disponibles || {})) if (porMayus.has(k)) m.set(porMayus.get(k), Number(v) || 0);
+    const antes = JSON.stringify([...(state.exhDisp || new Map())]);
+    state.exhDisp = m;
+    if (antes !== JSON.stringify([...m]) && state.draft && location.hash.startsWith('#/nuevo')) {
+      revisarExhibidores();
+      if (state.draft.step === 3) { if (!state.submitting) renderNuevo(); }
+      else {
+        const prodQ = $('#prod-q');
+        if (prodQ) { drawProductos(normalizeText(prodQ.value)); drawCart(); }
+      }
+    }
+  } catch { /* sin señal: se usa el último dato conocido; el servidor controla igual al grabar */ } finally {
+    state.exhStockBusy = false;
+  }
 }
 
 /** Orden por nivel (negativo = a es de nivel más alto que b). Igual que nivelExhibidor_ del servidor. */
@@ -407,7 +491,9 @@ function revisarExhibidores({ avisar = true } = {}) {
         state.draft.items[alt.sku] = 1;
         if (avisar) toast(`Se cambió el exhibidor “${p.descripcion}” por “${alt.descripcion}” (corresponde uno solo por pedido).`, 'ok', 5000);
       } else if (avisar) {
-        toast(`Se quitó el exhibidor “${p.descripcion}”: el pedido ya no llega a la compra mínima.`, 'warn', 5000);
+        toast(exhDisponibles(p) === 0 && exhibidorAvance(p).cumple
+          ? `Se quitó el exhibidor “${p.descripcion}”: se agotó el stock.`
+          : `Se quitó el exhibidor “${p.descripcion}”: el pedido ya no llega a la compra mínima.`, 'warn', 5000);
       }
     } else if (state.draft.items[sku] > 1) {
       state.draft.items[sku] = 1;
@@ -851,6 +937,7 @@ function cartLines() {
       precio: unitPrice(p, qty), precioLista: p.precio, cantidad: qty, subtotal: unitPrice(p, qty) * qty,
       esCombo: !!p.esCombo, contenido: p.esCombo ? comboContents(p) : '',
       esExhibidor: !!p.exhibidor,
+      bonif: bonifDe(p, qty),
     });
   }
   return lines;
@@ -1069,6 +1156,7 @@ function renderStepProductos() {
   revisarExhibidores({ avisar: false });
   draw();
   drawCart();
+  refreshExhStock();
   if (window.matchMedia('(min-width: 900px)').matches) input.focus();
 }
 
@@ -1097,7 +1185,9 @@ function productRow(p) {
       <span class="product__meta">${escapeHtml(p.marca)} · SKU <span class="mono">${escapeHtml(p.sku)}</span>${p.codBarra ? ` · <span class="mono">${escapeHtml(p.codBarra)}</span>` : ''}</span>
       <span class="product__price">${priceHtml(p, qty)}${qty ? ` <span class="product__subtotal">· Subtotal ${escapeHtml(formatGs(unitPrice(p, qty) * qty))}</span>` : ''}</span>
       ${tiersText(p) ? `<span class="product__tiers">🏷 ${escapeHtml(tiersText(p))}</span>` : ''}
+      ${p.bonificacion ? `<span class="product__tiers product__bonif">🎁 Cada ${formatNum(p.bonificacion.cada)} u: ${formatNum(p.bonificacion.cantidad)} × ${escapeHtml(p.bonificacion.descripcion)} sin cargo</span>` : ''}
       ${tierHintHtml(p, qty) ? `<span class="product__hint">${tierHintHtml(p, qty)}</span>` : ''}
+      ${bonifHintHtml(p, qty) ? `<span class="product__hint">${bonifHintHtml(p, qty)}</span>` : ''}
     </div>
     <div class="product__qty">${qtyControl(p.sku, qty, p.descripcion)}</div>
   </li>`;
@@ -1111,7 +1201,7 @@ function exhibidorRow(p, qty, img) {
     <div class="product__info">
       <span class="product__name"><span class="badge-exh">🎁 EXHIBIDOR SIN CARGO</span> ${escapeHtml(p.descripcion)}</span>
       <span class="product__meta">${escapeHtml(p.marca)} · SKU <span class="mono">${s}</span></span>
-      <span class="product__price">${priceHtml(p, 1)}</span>
+      <span class="product__price">${priceHtml(p, 1)}${quedanHtml(p)}</span>
       <span class="product__hint"><span class="tier-hint tier-hint--ok">✔ ${escapeHtml(exhibidorCondicion(p))}</span></span>
     </div>
     <div class="product__qty">${qty
@@ -1212,6 +1302,7 @@ function drawCart() {
       ? lines.map((l) => `<li class="cart__item${l.esExhibidor ? ' cart__item--exh' : ''}">
           <div class="cart__info">
             <span class="cart__name">${comboBadge(l)}${l.esExhibidor ? '<span class="badge-exh">🎁 EXHIBIDOR</span> ' : ''}${escapeHtml(l.descripcion)}</span>
+            ${bonifHintHtml(state.productosBySku.get(l.sku), l.cantidad) ? `<span class="cart__hint">${bonifHintHtml(state.productosBySku.get(l.sku), l.cantidad)}</span>` : ''}
             <span class="cart__meta">${l.esExhibidor ? '1 u · <strong>Sin cargo</strong>' : `${escapeHtml(formatGs(l.precio))} c/u · <strong>${escapeHtml(formatGs(l.subtotal))}</strong>`}</span>
             ${cartTierHint(l)}
           </div>
@@ -1220,7 +1311,7 @@ function drawCart() {
         </li>`).join('')
       : '<li class="empty empty--sm">El carrito está vacío. Buscá productos y tocá “+ Agregar”.</li>')
       + ofertas.map((p) => `<li class="cart__offer">
-          <span class="cart__offer-text">🎁 Este pedido califica para <strong>${escapeHtml(p.descripcion)}</strong> sin cargo</span>
+          <span class="cart__offer-text">🎁 Este pedido califica para <strong>${escapeHtml(p.descripcion)}</strong> sin cargo${quedanHtml(p)}</span>
           <button type="button" class="btn btn--primary-soft" data-qty-op="inc" data-sku="${escapeHtml(p.sku)}">+ Agregar</button>
         </li>`).join('');
   }
@@ -1293,7 +1384,7 @@ function renderStepConfirmar() {
             <td class="num">${escapeHtml(formatNum(l.cantidad))}</td>
             <td class="num">${l.esExhibidor ? 'Sin cargo' : escapeHtml(formatGs(l.precio))}</td>
             <td class="num">${escapeHtml(formatGs(l.subtotal))}</td>
-          </tr>`).join('')}</tbody>
+          </tr>${bonifRowHtml(l)}`).join('')}</tbody>
           <tfoot><tr><th scope="row" colspan="3">Total · ${items} producto${items === 1 ? '' : 's'}, ${escapeHtml(formatNum(unidades))} u.</th><td class="num total-cell">${escapeHtml(formatGs(total))}</td></tr></tfoot>
         </table>
       </div>
@@ -1301,7 +1392,7 @@ function renderStepConfirmar() {
         <span class="field__label">Observaciones (opcional)</span>
         <textarea class="input textarea" id="obs" rows="3" maxlength="500" placeholder="Ej.: entregar el lunes, contacto en sucursal, etc.">${escapeHtml(state.draft.observaciones)}</textarea>
       </label>
-      <p class="form__hint">Los precios son los de la lista del evento (con el precio por cantidad aplicado cuando corresponde). El pedido se guarda en la tablet y se envía automáticamente cuando haya señal.</p>
+      <p class="form__hint">Los precios son los de la lista del evento (con el precio por cantidad aplicado cuando corresponde). Los bonificados no suman al total. El pedido se guarda en la tablet y se envía automáticamente cuando haya señal.</p>
     </div>
     <div class="cartbar">
       <button type="button" class="btn btn--ghost btn--lg" id="back-products">← Editar productos</button>
@@ -1309,6 +1400,7 @@ function renderStepConfirmar() {
     </div>`;
 
   $('#obs').addEventListener('input', (e) => { state.draft.observaciones = e.target.value; persistDraft(); });
+  refreshExhStock(); // si justo se agotó un exhibidor del pedido, se quita y se redibuja el resumen
   $('#back-products').addEventListener('click', () => goStep(2));
   $('#confirm-btn').addEventListener('click', confirmOrder);
 }
@@ -1339,7 +1431,7 @@ async function confirmOrder() {
       codCliente: cliente.id,
       cliente,
       observaciones,
-      lineas: lines.map(({ sku, descripcion, marca, precio, cantidad, subtotal, esCombo, contenido, esExhibidor }) => ({ sku, descripcion, marca, precio, cantidad, subtotal, esCombo, contenido, esExhibidor })),
+      lineas: lines.map(({ sku, descripcion, marca, precio, cantidad, subtotal, esCombo, contenido, esExhibidor, bonif }) => ({ sku, descripcion, marca, precio, cantidad, subtotal, esCombo, contenido, esExhibidor, bonif })),
       total,
       estado: db.ESTADOS.PENDIENTE,
       mensaje: '',
@@ -1485,7 +1577,7 @@ function pedidoItem(p, open) {
           <td><span class="cell-main">${comboBadge(l)}${l.esExhibidor ? '<span class="badge-exh">🎁 EXHIBIDOR</span> ' : ''}${escapeHtml(l.descripcion)}</span><span class="cell-sub">${escapeHtml(l.sku)}</span>${l.esCombo && l.contenido ? `<span class="cell-sub">${escapeHtml(l.contenido)}</span>` : ''}</td>
           <td class="num">${escapeHtml(formatNum(l.cantidad))}</td>
           <td class="num">${l.esExhibidor ? 'Sin cargo' : escapeHtml(formatGs(l.precio))}</td>
-          <td class="num">${escapeHtml(formatGs(l.subtotal))}</td></tr>`).join('')}</tbody>
+          <td class="num">${escapeHtml(formatGs(l.subtotal))}</td></tr>${bonifRowHtml(l)}`).join('')}</tbody>
       </table></div>
       ${p.observaciones ? `<p><strong>Observaciones:</strong> ${escapeHtml(p.observaciones)}</p>` : ''}
       ${p.estado !== 'enviado' ? `<button type="button" class="btn btn--primary" data-retry="${escapeHtml(p.nroPedido)}">Reintentar envío</button>` : ''}
@@ -1513,6 +1605,7 @@ function startBackgroundTasks() {
   if (isVendor()) prefetchImages(); // completa imágenes que falten (ej. si la última vez no había señal)
   updatePendingBadge();
   setInterval(() => runSync(false), SYNC_INTERVAL_MS);
+  if (isVendor()) setInterval(() => { if (document.visibilityState === 'visible') refreshExhStock(); }, EXH_STOCK_INTERVAL_MS);
   setInterval(() => { if (document.visibilityState === 'visible') checkConnection(); }, PING_INTERVAL_MS);
 }
 

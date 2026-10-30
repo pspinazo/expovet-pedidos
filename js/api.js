@@ -87,3 +87,4 @@ export const login = (usuario, pin) => call('login', { usuario, pin }, { auth: f
 export const bootstrap = () => call('bootstrap', {}, { timeout: 30000 });
 export const enviarPedidos = (pedidos) => call('enviarPedidos', { pedidos }, { timeout: 30000 });
 export const dashboard = () => call('dashboard', {}, { timeout: 30000 });
+export const exhibidores = () => call('exhibidores', {}, { timeout: 10000 });
