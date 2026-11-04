@@ -4,7 +4,11 @@
  */
 
 // Versión de la app. Si la cambiás, cambiá también SHELL_VERSION en sw.js.
-export const APP_VERSION = '1.7.0';
+export const APP_VERSION = '1.8.0';
+
+// Sucursal a la que se registra el pedido (el servidor valida la misma lista).
+export const SUCURSALES = ['90', '01'];
+export const SUCURSAL_DEFECTO = '90';
 
 // URL del Web App de Google Apps Script (termina en /exec).
 const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbyJlYElj1ikeTYB0pym64Wv9Wqr8FGQu_xpOZpzEixsizTS4uxFv60RiXHz0bdZoj5smw/exec';
