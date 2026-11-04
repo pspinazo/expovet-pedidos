@@ -34,6 +34,7 @@ export function toWire(p) {
     fechaHora: p.fechaHora,
     codCliente: p.codCliente,
     observaciones: p.observaciones || '',
+    sucursal: p.sucursal || '90',
     lineas: p.lineas.map((l) => ({ sku: l.sku, cantidad: l.cantidad })),
   };
 }
