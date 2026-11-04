@@ -9,7 +9,7 @@
  *   #/resumen    Mi resumen (vendedor)
  *   #/dashboard  Dashboard (supervisor)
  */
-import { APP_VERSION, API_CONFIGURED } from './config.js';
+import { APP_VERSION, API_CONFIGURED, SUCURSALES, SUCURSAL_DEFECTO } from './config.js';
 import * as api from './api.js';
 import * as db from './db.js';
 import { processQueue, retryPedido, syncEvents } from './sync.js';
@@ -904,7 +904,7 @@ async function renderHome() {
 // =====================================================================
 
 function emptyDraft() {
-  return { uid: state.session.user.id, step: 1, cliente: null, items: {}, observaciones: '', updatedAt: null };
+  return { uid: state.session.user.id, step: 1, cliente: null, items: {}, observaciones: '', sucursal: SUCURSAL_DEFECTO, updatedAt: null };
 }
 
 async function loadDraft() {
@@ -912,6 +912,7 @@ async function loadDraft() {
   const d = await db.getMeta(DRAFT_KEY);
   state.draft = d && d.uid === state.session.user.id ? d : emptyDraft();
   if (!state.draft.items) state.draft.items = {};
+  if (!SUCURSALES.includes(state.draft.sucursal)) state.draft.sucursal = SUCURSAL_DEFECTO;
   return state.draft;
 }
 
@@ -1388,6 +1389,12 @@ function renderStepConfirmar() {
           <tfoot><tr><th scope="row" colspan="3">Total · ${items} producto${items === 1 ? '' : 's'}, ${escapeHtml(formatNum(unidades))} u.</th><td class="num total-cell">${escapeHtml(formatGs(total))}</td></tr></tfoot>
         </table>
       </div>
+      <div class="field">
+        <span class="field__label" id="suc-label">Sucursal del pedido</span>
+        <div class="tabs suc-tabs" role="radiogroup" aria-labelledby="suc-label" id="suc-tabs">
+          ${SUCURSALES.map((s) => `<button type="button" role="radio" class="tabs__btn" data-suc="${escapeHtml(s)}" aria-checked="${s === state.draft.sucursal}">Sucursal ${escapeHtml(s)}</button>`).join('')}
+        </div>
+      </div>
       <label class="field">
         <span class="field__label">Observaciones (opcional)</span>
         <textarea class="input textarea" id="obs" rows="3" maxlength="500" placeholder="Ej.: entregar el lunes, contacto en sucursal, etc.">${escapeHtml(state.draft.observaciones)}</textarea>
@@ -1400,6 +1407,21 @@ function renderStepConfirmar() {
     </div>`;
 
   $('#obs').addEventListener('input', (e) => { state.draft.observaciones = e.target.value; persistDraft(); });
+  const marcarSucursal = () => {
+    for (const b of document.querySelectorAll('#suc-tabs [data-suc]')) {
+      const on = b.dataset.suc === state.draft.sucursal;
+      b.classList.toggle('is-active', on);
+      b.setAttribute('aria-checked', String(on));
+    }
+  };
+  marcarSucursal();
+  $('#suc-tabs').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-suc]');
+    if (!b) return;
+    state.draft.sucursal = b.dataset.suc;
+    marcarSucursal();
+    persistDraft();
+  });
   refreshExhStock(); // si justo se agotó un exhibidor del pedido, se quita y se redibuja el resumen
   $('#back-products').addEventListener('click', () => goStep(2));
   $('#confirm-btn').addEventListener('click', confirmOrder);
@@ -1431,6 +1453,7 @@ async function confirmOrder() {
       codCliente: cliente.id,
       cliente,
       observaciones,
+      sucursal: SUCURSALES.includes(state.draft.sucursal) ? state.draft.sucursal : SUCURSAL_DEFECTO,
       lineas: lines.map(({ sku, descripcion, marca, precio, cantidad, subtotal, esCombo, contenido, esExhibidor, bonif }) => ({ sku, descripcion, marca, precio, cantidad, subtotal, esCombo, contenido, esExhibidor, bonif })),
       total,
       estado: db.ESTADOS.PENDIENTE,
@@ -1463,6 +1486,7 @@ function renderSuccess(p) {
         <h1 id="ok-title">Pedido guardado</h1>
         <p class="success__nro mono">${escapeHtml(p.nroPedido)}</p>
         <p class="success__client">${escapeHtml(p.cliente.nombreFantasia || p.cliente.razonSocial)}</p>
+        <p class="success__client">Sucursal ${escapeHtml(p.sucursal || SUCURSAL_DEFECTO)}</p>
         <p class="success__total">${escapeHtml(formatGs(p.total))}</p>
         <p class="form__hint" id="success-status">Se está enviando… si no hay señal, se enviará automáticamente más tarde.</p>
         <div class="success__actions">
@@ -1579,6 +1603,7 @@ function pedidoItem(p, open) {
           <td class="num">${l.esExhibidor ? 'Sin cargo' : escapeHtml(formatGs(l.precio))}</td>
           <td class="num">${escapeHtml(formatGs(l.subtotal))}</td></tr>${bonifRowHtml(l)}`).join('')}</tbody>
       </table></div>
+      <p><strong>Sucursal:</strong> ${escapeHtml(p.sucursal || SUCURSAL_DEFECTO)}</p>
       ${p.observaciones ? `<p><strong>Observaciones:</strong> ${escapeHtml(p.observaciones)}</p>` : ''}
       ${p.estado !== 'enviado' ? `<button type="button" class="btn btn--primary" data-retry="${escapeHtml(p.nroPedido)}">Reintentar envío</button>` : ''}
     </div>
